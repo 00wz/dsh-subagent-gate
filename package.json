@@ -25,7 +25,16 @@
     "sandbox",
     "agent"
   ],
+  "author": "00wz (https://github.com/00wz)",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/00wz/dsh-subagent-gate.git"
+  },
+  "homepage": "https://github.com/00wz/dsh-subagent-gate#readme",
+  "bugs": {
+    "url": "https://github.com/00wz/dsh-subagent-gate/issues"
+  },
   "engines": {
     "node": ">=22.19"
   },
