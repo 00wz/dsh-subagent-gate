@@ -1,0 +1,8 @@
+# Normalize line endings: the package ships JS/markdown, LF everywhere.
+* text=auto eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
