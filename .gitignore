@@ -1,0 +1,17 @@
+# Node
+node_modules/
+
+# Build output
+dist/
+*.tgz
+*.log
+
+# Local runtime state (config/audit live under $DSH_HOME, never here)
+config.json
+audit.jsonl
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,8 @@
+# dsh-subagent-gate: insert the plugin into the profile's layer stack.
+#
+# Deliberately NO `permission` row override: the gate works with the stock
+# `workspace-write + ask` preset and must never replace the profile's preset
+# table (that is what makes it survive DSH upgrades and profile edits).
+- insert:
+    - id: subagent-gate
+      name: 'dsh-subagent-gate'

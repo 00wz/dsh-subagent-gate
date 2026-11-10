@@ -1,0 +1,55 @@
+{
+  "name": "dsh-subagent-gate",
+  "version": "0.1.3",
+  "description": "Ask a human before a delegated subagent widens its sandbox: re-arms a child's approval policy to `ask` and routes the resulting request to a person (root session or the child's own).",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "subagent",
+    "approval",
+    "escalation",
+    "sandbox",
+    "agent"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": "^0.2.0-rc.1 || ^0.2.1-rc.0 || ^0.2.2-rc.1"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node test/run.mjs",
+    "pack": "npm pack"
+  }
+}
