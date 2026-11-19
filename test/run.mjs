@@ -68,12 +68,16 @@ function mkWorld(policyBySession = {}) {
 function mkGate(world, configOverrides = {}, requestImpl) {
   const config = { ...DEFAULTS, ...configOverrides };
   const approval = { ...world.approval };
-  if (requestImpl) approval.request = requestImpl;
+  approval.request = async () => { throw new Error("A forwarded presentation must not start a second approval transaction"); };
   const coverage = new Coverage({ agents: world.agents, approval });
+  // Emulate the Host arming a delegated child before its original request.
+  for (const agent of world.agents.list()) {
+    if (coverage.isManaged(agent.session)) approval.setPolicy(agent, "ask");
+  }
   const audit = { record: async () => {} };
   const queue = new Queue();
   const targets = new TargetRegistry();
-  const gate = new HumanGate({ approval, coverage, config, queue, audit, targets });
+  const gate = new HumanGate({ approval, coverage, config, queue, audit, targets, present: requestImpl ?? (async () => "allowed-once") });
   return { gate, approval, coverage, config, targets };
 }
 
@@ -295,14 +299,17 @@ check("pipeline: strictest prefers ask over allow", resolveSignals([{ decision: 
   const root = world.add(mkSession("session-root"));
   const child = world.add(mkSession("child-1", "session-root"));
   const coverage = new Coverage({ agents: world.agents, approval: world.approval });
+  world.approval.setPolicy(child, "ask");
   const prompt = createGatePrompt({ coverage, isChild: Coverage.isChild });
   check("prompt: armed child gets the note", prompt.text({ agent: child }).includes("relayed to the human"), true);
   check("prompt: note stays minimal (no duplicated escalation rules)", prompt.text({ agent: child }).length < 400, true);
   check("prompt: root session gets nothing", prompt.text({ agent: root }), "");
   check("prompt: no agent is safe", prompt.text({}), "");
-  check("prompt: note is ordered after the host delegation note", prompt.order > 100, true);
+  check("prompt: note is ordered after the host delegation note", prompt.order > 120, true);
   const withSuffix = createGatePrompt({ coverage, isChild: Coverage.isChild, suffix: "Ask once." });
   check("prompt: config suffix is appended", withSuffix.text({ agent: child }).endsWith("Ask once."), true);
+  world.approval.setPolicy(child, "never");
+  check("prompt: explicit never suppresses a previously managed child's note", prompt.text({ agent: child }), "");
 }
 
 // ---- target strategies ------------------------------------------------------
@@ -331,6 +338,155 @@ check("targets: built-ins are root/self/auto", new TargetRegistry().ids(), ["roo
   const verdict = await gate.decide({ agent: child, session: child.session, toolName: "pwsh", reason: "x", depth: 1 });
   check("targets: an unknown id falls back to the root session", verdict.decision, "deny");
   check("targets: unknown id does not throw", true, true);
+}
+
+// ---- regression: presentation, policies, cancellation and failure safety ----
+
+check("config: legacy timeout allow cannot grant without a person", normalize({ onTimeout: "allow" }).onTimeout, "reject");
+check("config: legacy missing-answerer allow cannot grant", normalize({ onNoAnswerer: "allow" }).onNoAnswerer, "reject");
+
+function scenario(overrides = {}, present) {
+  const world = mkWorld({ root: "ask" });
+  const root = world.add(mkSession("root"));
+  const child = world.add(mkSession("child", "root"));
+  const fixture = mkGate(world, overrides, present);
+  const ctx = { agent: child, session: child.session, toolName: "pwsh", reason: "test only", depth: 1, callId: "child-call-1" };
+  return { world, root, child, ctx, ...fixture };
+}
+{
+  let received;
+  const s = scenario({}, async req => { received = req; return "allowed-once"; });
+  check("regression: idle-root presentation does not call approval.request", (await s.gate.decide(s.ctx)).decision, "allow");
+  check("presentation: payload Agent is the root", received.agent === s.root, true);
+  check("presentation: child callId is omitted from root card", Object.hasOwn(received, "callId"), false);
+  check("presentation: displayReason is a locale record", typeof received.displayReason.en, "string");
+  check("presentation: provenance contains child id", received.displayReason.en.includes("child"), true);
+}
+{
+  let received;
+  const s = scenario({ forwardTo: "self" }, async req => { received = req; return "allowed-once"; });
+  await s.gate.decide(s.ctx);
+  check("presentation: self keeps its own tool callId", received.callId, "child-call-1");
+}
+for (const outcome of ["rejected", "cancelled", "unavailable", "unexpected", { toString: () => "allowed-once" }]) {
+  const s = scenario({ onNoAnswerer: "allow", onTimeout: "allow" }, async () => outcome);
+  check("safety: non-grant outcome cannot allow: " + String(outcome), (await s.gate.decide(s.ctx)).decision, "deny");
+}
+{
+  const s = scenario({ onNoAnswerer: "allow" }, async () => { throw new Error("transport failed"); });
+  check("safety: internal errors deny even with legacy allow config", (await s.gate.decide(s.ctx)).decision, "deny");
+}
+for (const who of ["root", "child"]) {
+  let prompts = 0;
+  const s = scenario({}, async () => { prompts++; return "allowed-once"; });
+  s.world.policies.set(who, "never");
+  check("policy: " + who + " never denies", (await s.gate.decide(s.ctx)).decision, "deny");
+  check("policy: " + who + " never never prompts", prompts, 0);
+}
+{
+  let prompts = 0;
+  const s = scenario({}, async () => { prompts++; return "allowed-once"; });
+  s.approval.overrideOf = () => { throw new Error("unreadable policy"); };
+  check("policy: read failure denies", (await s.gate.decide(s.ctx)).decision, "deny");
+  check("policy: read failure does not prompt", prompts, 0);
+}
+{
+  const s = scenario({}, async () => { s.world.policies.set("root", "never"); return "allowed-once"; });
+  check("policy: switching root to never discards late grant", (await s.gate.decide(s.ctx)).decision, "deny");
+}
+{
+  let prompts = 0;
+  const s = scenario({}, async () => { prompts++; return "allowed-once"; });
+  s.gate.isLive = () => false;
+  check("lifetime: replaced/disposed Agent cannot receive a grant", (await s.gate.decide(s.ctx)).decision, "deny");
+  check("lifetime: absent Agent not prompted", prompts, 0);
+}
+{
+  const s = scenario();
+  s.gate.coverage.rootAgent = () => undefined;
+  check("routing: missing root does not silently fall back to self", (await s.gate.decide(s.ctx)).decision, "deny");
+}
+{
+  let prompts = 0;
+  const s = scenario({}, async () => { prompts++; return "allowed-once"; });
+  const abort = new AbortController(); abort.abort();
+  check("cancel: pre-aborted ask denies", (await s.gate.decide({ ...s.ctx, signal: abort.signal })).decision, "deny");
+  check("cancel: pre-aborted ask never prompts", prompts, 0);
+}
+{
+  let late;
+  const s = scenario({}, () => new Promise(resolve => { late = resolve; }));
+  const abort = new AbortController();
+  const result = s.gate.decide({ ...s.ctx, signal: abort.signal });
+  await sleep(0); abort.abort();
+  check("cancel: uncooperative answerer is cancelled immediately", (await result).decision, "deny");
+  late("allowed-once");
+  check("cancel: busy bookkeeping is released", s.gate.isBusy("child"), false);
+}
+{
+  let release, calls = 0;
+  const s = scenario({}, () => { calls++; return new Promise(resolve => { release = resolve; }); });
+  const first = s.gate.decide(s.ctx);
+  await sleep(0);
+  const abort = new AbortController();
+  const second = s.gate.decide({ ...s.ctx, signal: abort.signal });
+  abort.abort();
+  check("queue: cancelled pending ask resolves before active card", (await second).decision, "deny");
+  release("allowed-once");
+  await first; await sleep(0);
+  check("queue: cancelled pending ask never presents later", calls, 1);
+}
+{
+  const seen = [];
+  const s = scenario({ forwardTo: "auto", directProbeMs: 5 }, async req => {
+    seen.push(req.agent.id);
+    return req.agent.id === "child" ? "unavailable" : "allowed-once";
+  });
+  // Correctly distinguish absence of an answerer from an actual human denial.
+  check("auto: unavailable self answerer falls back to root", (await s.gate.decide(s.ctx)).decision, "allow");
+  check("auto: fallback visits self then root", seen, ["child", "root"]);
+}
+{
+  let active = 0, maxActive = 0;
+  const s = scenario({ forwardTo: "auto", directProbeMs: 50 }, async () => {
+    active++; maxActive = Math.max(maxActive, active); await sleep(5); active--; return "allowed-once";
+  });
+  const results = await Promise.all([s.gate.decide(s.ctx), s.gate.decide(s.ctx)]);
+  check("queue: concurrent auto probes use one card at a time", maxActive, 1);
+  check("queue: both concurrent asks get their own answer", results.map(v => v.decision), ["allow", "allow"]);
+}
+{
+  const s = scenario();
+  const prompt = createGatePrompt({ coverage: s.coverage, isChild: Coverage.isChild, enabled: () => false, order: 131 });
+  check("prompt: disabled gate is silent", prompt.text({ agent: s.child }), "");
+  check("prompt: provided host-relative context order is used", prompt.order, 131);
+}
+
+for (const change of ["root-never", "child-never", "disabled", "disposed", "cancelled"]) {
+  const s = scenario();
+  const abort = new AbortController();
+  const ctx = { ...s.ctx, signal: abort.signal };
+  s.gate.audit.record = async record => {
+    if (record.kind !== "human") return;
+    await Promise.resolve();
+    if (change === "root-never") s.world.policies.set("root", "never");
+    if (change === "child-never") s.world.policies.set("child", "never");
+    if (change === "disabled") s.config.enabled = false;
+    if (change === "disposed") s.gate.isLive = () => false;
+    if (change === "cancelled") abort.abort();
+  };
+  check("commit: change during asynchronous audit rejects grant: " + change, (await s.gate.decide(ctx)).decision, "deny");
+  check("commit: final Host grant guard is stale: " + change, ctx.grantIsCurrent(), false);
+}
+{
+  let prompts = 0;
+  const s = scenario({}, async () => { prompts++; return "allowed-once"; });
+  s.world.add(mkSession("intermediate", "missing-root"));
+  s.world.policies.set("intermediate", "ask");
+  s.child.session.header.parentSession = "intermediate";
+  check("root: live subagent ancestor is not a replacement for missing human root", s.coverage.rootAgent(s.child.session), undefined);
+  check("root: missing human root with live intermediate denies", (await s.gate.decide(s.ctx)).decision, "deny");
+  check("root: intermediate subagent does not receive a root card", prompts, 0);
 }
 
 // ---- report ----------------------------------------------------------------

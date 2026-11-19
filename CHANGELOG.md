@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.4
+
+- Route only approval presentation through the scoped answerer waterfall. The
+  original child's open turn owns the audit pair; idle root sessions no longer
+  fail with `approval.request() outside an open turn`.
+- Require effective `ask` policies for both source and target, validate exact
+  `allowed-once` answers, and fail closed on cancellation, missing answerers,
+  unreadable policies, timeouts, errors and late grants. Legacy failure-mode
+  `allow` settings are normalized to `reject`.
+- Use localized `displayReason` records and keep a child's `callId` out of root
+  tool-detail lookup. Guard forwarded requests by object identity, not session id.
+- Serialize auto probes with regular asks; allow queued cancellation, fall back
+  from unavailable self answerers, and do not silently replace a missing root
+  with self.
+- Cancel pending presentations and restore armed policies on off/unload; retain
+  command registration when starting disabled. Place the gate note after the
+  host's delegation context.
+- Require DSH >=0.2.2-rc.5. Add safety regressions and an isolated integration
+  harness using the installed Cordis scopes and ApprovalService.
+
 ## 0.1.3
 
 - **Minimal model-facing note.** The note shown to armed children is reduced to

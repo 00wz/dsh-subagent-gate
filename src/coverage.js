@@ -33,7 +33,7 @@ export class Coverage {
     try {
       return this.approval.overrideOf(session) ?? this.approval.config?.policy ?? "ask";
     } catch {
-      return "ask";
+      return "never";
     }
   }
 
@@ -65,8 +65,8 @@ export class Coverage {
       const agent = chain[i];
       if (!Coverage.isChild(agent.session)) return agent;
     }
-    // Every ancestor is a child (should not happen): the topmost one is closest.
-    return chain.length > 0 ? chain[chain.length - 1] : undefined;
+    // A disposed/missing human root is not replaced by a delegated ancestor.
+    return undefined;
   }
 
   /**

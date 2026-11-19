@@ -31,18 +31,19 @@ export const GATE_PROMPT =
  * @param {Function} deps.isChild session predicate
  * @param {string} [deps.suffix] optional extra text from config (`promptSuffix`)
  */
-export function createGatePrompt({ coverage, isChild, suffix = "" }) {
+export function createGatePrompt({ coverage, isChild, suffix = "", enabled = () => true, order = 121 }) {
   const extra = typeof suffix === "string" && suffix.trim() !== "" ? " " + suffix.trim() : "";
   return {
     name: "subagent-gate:escalation",
     // After the host's delegation note (`subagent:delegation`) and after the
     // policy contributions, so it reads as the exception to them.
-    order: 117,
+    order,
     text: (context) => {
+      if (!enabled()) return "";
       const agent = context && context.agent;
       const session = agent && agent.session;
       if (!session || !isChild(session)) return "";
-      if (!coverage.isManaged(session)) return "";
+      if (!coverage.isManaged(session) || coverage.policyOf(session) !== "ask") return "";
       return GATE_PROMPT + extra;
     },
   };

@@ -20,7 +20,7 @@ export const BUILTIN_TARGETS = {
   /** The nearest non-subagent ancestor: the session the user is looking at. */
   root: (ctx, gate) => {
     const agent = gate.coverage.rootAgent(ctx.session);
-    return agent ? { agent, path: "root" } : { agent: ctx.agent, path: "self" };
+    return { agent, path: "root" };
   },
 
   /** The child's own session. Visible only when that session is open. */

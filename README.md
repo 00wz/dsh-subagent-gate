@@ -51,7 +51,7 @@ dsh plugin --profile <profile> add dsh-subagent-gate
 
 # or from a packed tarball
 npm pack
-dsh plugin --profile <profile> add ./dsh-subagent-gate-0.1.3.tgz
+dsh plugin --profile <profile> add ./dsh-subagent-gate-0.1.4.tgz
 ```
 
 Install a **packed tarball**, not a `link:` on the source directory: a linked
@@ -83,8 +83,8 @@ defaults apply while the file is absent:
 |---|---|
 | `forwardTo` | target strategy id for the confirmation card (see below) |
 | `directProbeMs` | budget for the one-time `auto` probe; `0` disables probing |
-| `humanTimeoutMs` | `0` waits for the human indefinitely; otherwise a timeout resolves per `onTimeout` |
-| `onTimeout` / `onNoAnswerer` | `reject` (default) or `allow` |
+| `humanTimeoutMs` | `0` waits for the human indefinitely; a positive timeout rejects |
+| `onTimeout` / `onNoAnswerer` | always `reject`; legacy `allow` values are normalized to `reject` |
 | `provenance` | prefix the ask with `[subagent <id> · depth <n>]` and pass a display line |
 | `promptSuffix` | extra text appended to the model-facing note |
 | `audit` | append one JSONL record per decision to `audit.jsonl` |
@@ -93,7 +93,7 @@ defaults apply while the file is absent:
 
 | id | path |
 |---|---|
-| `root` (default) | the nearest non-subagent ancestor — the session the user is looking at, so the card is always visible |
+| `root` (default) | show the card in the live non-subagent ancestor's scope; that session must be open in the UI, but its Agent may be idle |
 | `self` | the child's own session (visible only while that session is open) |
 | `auto` | probe `self` once per process for `directProbeMs`, then fall back to `root` and stay there |
 | *any other* | looked up in the target registry; an unknown id falls back to `root` |
@@ -101,6 +101,19 @@ defaults apply while the file is absent:
 `root` is the default because the stock Web UI binds the approval card to the
 session that is currently open: a subagent listed in a sidebar tree is still a
 *different* session view.
+
+Presentation does **not** start another `approval.request()` in the root. The
+child's original open turn owns the one `approval/asked` + `approval/decided`
+audit pair. The gate dispatches the public answerer waterfall in the chosen
+Agent's scope, so an idle root can display the card without a synthetic turn or
+out-of-turn log writes. The forwarded payload names that same presentation Agent.
+A child tool's `callId` is kept only for `self`, never resolved in the root's history.
+
+Both the child and presentation Agent must currently have effective `ask` policy;
+policy read errors, a missing/replaced Agent, `never`, cancellation and late answers
+fail closed. `root` mode does not fall back to `self` if no root is available.
+`auto` falls back on a timeout or unavailable self answerer, but not on an explicit
+human rejection or cancellation. Probes and regular asks share the same FIFO.
 
 ## Commands
 
@@ -154,9 +167,16 @@ said no" mode. With no final verdict the collected signals resolve strictly
 
 ## Compatibility
 
-Written against DSH `0.2.x` and tested on `0.2.2-rc.1`. It uses public seams
-only: `agent/created`, `approval/request`, `approval.setPolicy`,
-`approval.overrideOf`, `systemPrompt.context`, `commands.register`.
+Requires DSH `>=0.2.2-rc.5` (`engines.dsh`). This repair targets the tested
+turn-enclosed approval and scoped-answerer API; older DSH releases are not claimed
+as supported. Host peers are supplied by DSH, including its singleton
+`@deepseek-ai/dsh-scope` (do not bundle a second scope implementation).
+
+Public seams: `agent/created`, `approval/request`, `approval.setPolicy`,
+`approval.overrideOf`, `scopeTarget`, `systemPrompt.context`, `commands.register`.
+The gate's prompt contribution is ordered after DSH's delegation context.
+Disabling or unloading cancels pending presentations and restores gate-armed
+children; the `on` command remains available when the plugin starts disabled.
 
 ## Limitations
 
@@ -177,9 +197,16 @@ only: `agent/created`, `approval/request`, `approval.setPolicy`,
 ## Development
 
 ```bash
-node test/run.mjs     # 57 assertions, no host required
-npm pack              # produces the installable tarball
+node test/run.mjs     # behavior and safety regressions; no host required
+npm pack             # produces the installable tarball
 ```
+
+`test/integration.mjs` runs against the installed DSH runtime (`DSH_INSTALL_DIR`),
+using isolated sessions, the actual Cordis scope/approval services and a simulated
+human answerer. Run it with `DSH_NODE_EXECUTABLE` and `ELECTRON_RUN_AS_NODE=1`
+for Desktop/ASAR. It must not run against the live profile's Agents or approval
+policy. A green integration run is not evidence that a real browser card rendered;
+manual UI acceptance remains a separate check.
 
 ## Roadmap
 

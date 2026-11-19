@@ -13,18 +13,23 @@ export class Queue {
   }
 
   /** Run `fn` after every previously queued task settled. */
-  run(fn) {
+  run(fn, signal) {
+    const aborted = () => new DOMException("Queued approval cancelled", "AbortError");
+    if (signal?.aborted) return Promise.reject(aborted());
     this.depth++;
-    const started = this.tail.then(
-      () => fn(),
-      () => fn(),
-    );
-    this.tail = started.then(
-      () => undefined,
-      () => undefined,
-    );
-    return started.finally(() => {
-      this.depth--;
+    const start = () => {
+      if (signal?.aborted) throw aborted();
+      return fn();
+    };
+    const started = this.tail.then(start, start).finally(() => { this.depth--; });
+    this.tail = started.then(() => undefined, () => undefined);
+    if (!signal) return started;
+    return new Promise((resolve, reject) => {
+      const onAbort = () => { cleanup(); reject(aborted()); };
+      const cleanup = () => signal.removeEventListener("abort", onAbort);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) { onAbort(); return; }
+      started.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
     });
   }
 }

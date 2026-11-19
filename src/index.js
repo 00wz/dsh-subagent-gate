@@ -16,6 +16,7 @@
  *  - anything unexpected fails closed (`rejected`), never "allow".
  */
 import { Service } from "@deepseek-ai/cordis";
+import { scopeTarget } from "@deepseek-ai/dsh-scope";
 import { HumanGate } from "./ask.js";
 import { Audit } from "./audit.js";
 import { DEFAULTS, CONFIG_FILE, loadConfig, saveConfig } from "./config.js";
@@ -39,11 +40,16 @@ export class SubagentGate extends Service {
     this.config = { ...DEFAULTS };
     /** session ids this gate armed (children it set to `ask`). */
     this.armed = new Set();
+    this.presentations = new WeakSet();
+    this.lifetime = new AbortController();
   }
 
   async [Service.init]() {
     this.config = await loadConfig();
-    if (!this.config.enabled) return;
+    this.ctx.effect(() => () => {
+      this.lifetime.abort();
+      this.#restoreArmed();
+    });
 
     this.audit = new Audit(this.config);
     this.coverage = new Coverage({ agents: this.ctx.agents, approval: this.ctx.approval });
@@ -62,6 +68,20 @@ export class SubagentGate extends Service {
       queue: this.queue,
       audit: this.audit,
       targets: this.targets,
+      isLive: (agent) => this.ctx.agents.get(agent.session.id) === agent,
+      present: async (request) => {
+        // This is presentation inside the child's existing approval/request.
+        // No second approval.request() and no synthetic root turn/audit pair.
+        this.presentations.add(request);
+        try {
+          return await this.ctx.waterfall(
+            scopeTarget(request.agent, request.agent),
+            "approval/request", request, () => Promise.resolve("unavailable"),
+          );
+        } finally {
+          this.presentations.delete(request);
+        }
+      },
     });
     this.pipeline = new Pipeline([this.gate.stage()]);
 
@@ -94,7 +114,12 @@ export class SubagentGate extends Service {
     // note says the opposite, and a model that believes it never asks at all.
     this.ctx.inject(["systemPrompt"], (scope) => {
       scope.systemPrompt.context(
-        createGatePrompt({ coverage: this.coverage, isChild: Coverage.isChild, suffix: this.config.promptSuffix }),
+        createGatePrompt({
+          coverage: this.coverage, isChild: Coverage.isChild,
+          enabled: () => this.config.enabled,
+          order: scope.systemPrompt.getContextOrder("SUBAGENT_DELEGATION") + 1,
+          suffix: this.config.promptSuffix,
+        }),
       );
     });
 
@@ -104,6 +129,7 @@ export class SubagentGate extends Service {
   // ---- listeners -----------------------------------------------------------
 
   async #onCreated(payload) {
+    if (!this.config.enabled) return;
     try {
       const agent = payload && payload.agent;
       const session = agent && agent.session;
@@ -127,14 +153,13 @@ export class SubagentGate extends Service {
    * Claims managed children only; everything else gets `next()` untouched.
    */
   async #onApproval(req, next) {
+    if (!this.config.enabled || this.presentations.has(req)) return next();
     let ctx;
     try {
       const agent = req && req.agent;
       const session = agent && agent.session;
       if (!session || !Coverage.isChild(session)) return await next();
       if (this.gate === undefined) return await next();
-      // A request the gate itself issued (probe / forwarded ask) is not ours.
-      if (this.gate.isBusy(session.id)) return await next();
       if (!this.coverage.isManaged(session)) return await next();
       ctx = {
         agent,
@@ -142,7 +167,7 @@ export class SubagentGate extends Service {
         toolName: req.toolName,
         callId: req.callId,
         reason: req.reason,
-        signal: req.signal,
+        signal: req.signal ? AbortSignal.any([req.signal, this.lifetime.signal]) : this.lifetime.signal,
         depth: Number.isFinite(session.header?.delegationDepth) ? session.header.delegationDepth : this.coverage.ancestors(session).length,
         signals: [],
       };
@@ -152,7 +177,7 @@ export class SubagentGate extends Service {
 
     try {
       const verdict = await this.pipeline.run(ctx);
-      return verdict.decision === "allow" ? OUTCOME_ALLOW : OUTCOME_DENY;
+      return verdict.decision === "allow" && ctx.grantIsCurrent?.() === true ? OUTCOME_ALLOW : OUTCOME_DENY;
     } catch {
       // Fail closed: a broken decision must never widen a child's reach.
       return OUTCOME_DENY;
@@ -171,7 +196,18 @@ export class SubagentGate extends Service {
     return this;
   }
 
+  #restoreArmed() {
+    for (const id of this.armed) {
+      try {
+        const agent = this.ctx.agents.get(id);
+        if (agent) this.knobs?.restore(agent);
+      } catch { /* a leaving agent must not break teardown */ }
+    }
+    this.armed.clear();
+  }
+
   async #armExisting() {
+    if (!this.config.enabled) return;
     try {
       const agents = this.ctx.agents;
       if (typeof agents.list !== "function") return;
@@ -197,15 +233,13 @@ export class SubagentGate extends Service {
         if (arg === "off") {
           this.config.enabled = false;
           void saveConfig(this.config);
-          for (const id of [...this.armed]) {
-            const agent = this.ctx.agents.get(id);
-            if (agent) this.knobs.restore(agent);
-          }
-          this.armed.clear();
+          this.lifetime.abort();
+          this.#restoreArmed();
           return { kind: "success", text: "subagent-gate: OFF (armed children restored to their previous policy)" };
         }
         if (arg === "on") {
           this.config.enabled = true;
+          if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
           void saveConfig(this.config);
           void this.#armExisting();
           return { kind: "success", text: "subagent-gate: ON" };

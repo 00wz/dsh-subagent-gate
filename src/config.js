@@ -66,10 +66,6 @@ function num(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
-function pick(value, allowed, fallback) {
-  return typeof value === "string" && allowed.includes(value) ? value : fallback;
-}
-
 /** Merge one parsed file over the defaults, ignoring anything unusable. */
 export function normalize(raw) {
   const cfg = { ...DEFAULTS };
@@ -81,8 +77,10 @@ export function normalize(raw) {
   if (typeof raw.forwardTo === "string" && raw.forwardTo.trim() !== "") cfg.forwardTo = raw.forwardTo.trim();
   cfg.directProbeMs = num(raw.directProbeMs, DEFAULTS.directProbeMs, 0, 120000);
   cfg.humanTimeoutMs = num(raw.humanTimeoutMs, DEFAULTS.humanTimeoutMs, TIMEOUT_MIN, TIMEOUT_MAX);
-  cfg.onTimeout = pick(raw.onTimeout, ["reject", "allow"], DEFAULTS.onTimeout);
-  cfg.onNoAnswerer = pick(raw.onNoAnswerer, ["reject", "allow"], DEFAULTS.onNoAnswerer);
+  // A missing human decision is never a grant, including legacy configs
+  // that selected "allow" here. Keep keys for readable config compatibility.
+  cfg.onTimeout = "reject";
+  cfg.onNoAnswerer = "reject";
   if (typeof raw.provenance === "boolean") cfg.provenance = raw.provenance;
   if (typeof raw.promptSuffix === "string") cfg.promptSuffix = raw.promptSuffix.slice(0, 2000);
   if (typeof raw.audit === "boolean") cfg.audit = raw.audit;
